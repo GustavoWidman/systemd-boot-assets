@@ -9,18 +9,19 @@ concurrency:
   group: systemd-boot-assets
   cancel-in-progress: false
 
-permissions:
-  contents: write
-
 jobs:
-  build-release:
-    name: Build and release EFI assets
+  build-assets:
+    name: Build EFI assets
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      has_new_release: ${{ steps.check.outputs.has_new_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Check if builds are disabled
         id: disabled
@@ -83,10 +84,49 @@ jobs:
           cp result/manifest.json dist/manifest.json
           (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
 
-      - name: Commit updated lockfile
+      - name: Upload release files
         if: steps.check.outputs.has_new_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: systemd-boot-assets
+          path: dist/*
+
+      - name: Upload updated lockfile
+        if: steps.check.outputs.has_new_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock
+          path: flake.lock
+
+  publish-release:
+    name: Publish release
+    needs: build-assets
+    if: needs.build-assets.outputs.has_new_release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          name: systemd-boot-assets
+          path: dist
+
+      - name: Download updated lockfile
+        uses: actions/download-artifact@v4
+        with:
+          name: flake-lock
+          path: updated-lock
+
+      - name: Commit updated lockfile
         run: |
           set -euo pipefail
+          cp updated-lock/flake.lock flake.lock
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
@@ -94,19 +134,18 @@ jobs:
             echo "flake.lock unchanged."
           else
             git add flake.lock
-            git commit -m "chore: update nixpkgs for ${{ steps.check.outputs.tag }}"
+            git commit -m "chore: update nixpkgs for ${{ needs.build-assets.outputs.tag }}"
             git push
           fi
 
       - name: Create GitHub release
-        if: steps.check.outputs.has_new_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.check.outputs.tag }}" \
+          gh release create "${{ needs.build-assets.outputs.tag }}" \
             dist/systemd-bootx64.efi \
             dist/systemd-bootaa64.efi \
             dist/manifest.json \
             dist/SHA256SUMS \
-            --title "systemd-boot ${{ steps.check.outputs.version }}" \
-            --notes "Pinned systemd-boot EFI binaries built from nixpkgs systemd ${{ steps.check.outputs.version }}."
+            --title "systemd-boot ${{ needs.build-assets.outputs.version }}" \
+            --notes "Pinned systemd-boot EFI binaries built from nixpkgs systemd ${{ needs.build-assets.outputs.version }}."
