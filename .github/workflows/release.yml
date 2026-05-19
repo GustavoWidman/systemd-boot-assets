@@ -161,15 +161,15 @@ jobs:
         run: |
           set -euo pipefail
           cp updated-lock/flake.lock flake.lock
-          cat > dist/manifest.json <<EOF
           {
-            "systemdVersion": "${{ needs.check-release.outputs.version }}",
-            "assets": {
-              "x64": "systemd-bootx64.efi",
-              "aa64": "systemd-bootaa64.efi"
-            }
-          }
-EOF
+            printf '%s\n' '{'
+            printf '  "systemdVersion": "%s",\n' '${{ needs.check-release.outputs.version }}'
+            printf '%s\n' '  "assets": {'
+            printf '%s\n' '    "x64": "systemd-bootx64.efi",'
+            printf '%s\n' '    "aa64": "systemd-bootaa64.efi"'
+            printf '%s\n' '  }'
+            printf '%s\n' '}'
+          } > dist/manifest.json
           (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
 
       - name: Commit updated lockfile
