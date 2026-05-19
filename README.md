@@ -2,7 +2,7 @@
 
 Tiny release builder for `systemd-boot` EFI binaries.
 
-The repository does not store EFI binaries in git. A scheduled GitHub Actions workflow updates `nixpkgs`, builds `systemd-bootx64.efi` and `systemd-bootaa64.efi` with Nix, then publishes them as release assets when the release tag for that systemd version is missing.
+The repository does not store EFI binaries in git. A scheduled GitHub Actions workflow updates `nixpkgs`, builds native Linux `systemd-boot` assets with Nix, publishes GitHub release assets, then rewrites `release.nix` with pinned URLs and SRI hashes.
 
 Release tags use this shape:
 
@@ -17,25 +17,45 @@ systemd-bootx64.efi
 systemd-bootaa64.efi
 manifest.json
 SHA256SUMS
+systemd-boot-bundle.tar.gz
 ```
 
 ## Build locally
 
-Build the native asset for a Linux system:
+Build the native CI package on x86_64 Linux:
 
 ```sh
-nix build .#packages.x86_64-linux.default
+nix build .#packages.x86_64-linux.build-from-nixpkgs
 ```
 
-The `x86_64-linux` output contains:
+Build the native CI package on aarch64 Linux:
 
-```text
-result/systemd-bootx64.efi
-result/manifest.json
+```sh
+nix build .#packages.aarch64-linux.build-from-nixpkgs
 ```
 
-Build `.#packages.aarch64-linux.default` on an aarch64 Linux runner for `systemd-bootaa64.efi`.
+Each native build output contains the EFI binary for that architecture and a `manifest.json` file.
 
 ## Use from another flake
 
-Fetch release assets with fixed-output `fetchurl` hashes and point your image builder at the fetched paths. That keeps downstream projects from evaluating the Linux-only `systemd` package on Darwin.
+Downstream projects should use the prebuilt release assets, not the native build package:
+
+```nix
+{
+  inputs.systemd-boot-assets.url = "github:GustavoWidman/systemd-boot-assets";
+
+  outputs = { self, nixpkgs, systemd-boot-assets, ... }: {
+    packages.x86_64-darwin.default = systemd-boot-assets.packages.x86_64-darwin.default;
+  };
+}
+```
+
+Useful outputs:
+
+- `packages.${system}.default`: bundle directory with both EFI binaries, `manifest.json`, and `SHA256SUMS`
+- `packages.${system}.x64`: pinned `systemd-bootx64.efi`
+- `packages.${system}.aa64`: pinned `systemd-bootaa64.efi`
+- `packages.x86_64-linux.build-from-nixpkgs`: native CI build from `pkgs.systemd`
+- `packages.aarch64-linux.build-from-nixpkgs`: native CI build from `pkgs.systemd`
+
+`release.nix` is seeded with placeholder hashes until the first GitHub release exists. Bootstrap updates come from CI after it publishes the first real assets.

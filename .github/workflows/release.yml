@@ -84,9 +84,11 @@ jobs:
       matrix:
         include:
           - system: x86_64-linux
+            arch: x64
             asset: systemd-bootx64.efi
             runner: ubuntu-24.04
           - system: aarch64-linux
+            arch: aa64
             asset: systemd-bootaa64.efi
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -110,15 +112,15 @@ jobs:
             cores = ${{ matrix.system == 'aarch64-linux' && '2' || '0' }}
             max-jobs = ${{ matrix.system == 'aarch64-linux' && '2' || 'auto' }}
 
-      - name: Build asset
-        run: nix build .#packages.${{ matrix.system }}.default -L
+      - name: Build native asset
+        run: nix build .#packages.${{ matrix.system }}.build-from-nixpkgs -L
 
       - name: Prepare asset
         run: |
           set -euo pipefail
           mkdir -p dist
           cp "result/${{ matrix.asset }}" "dist/${{ matrix.asset }}"
-          cp result/manifest.json "dist/manifest-${{ matrix.system }}.json"
+          cp result/manifest.json "dist/manifest-${{ matrix.arch }}.json"
 
       - name: Upload asset
         uses: actions/upload-artifact@v4
@@ -157,32 +159,96 @@ jobs:
           name: flake-lock
           path: updated-lock
 
-      - name: Prepare release files
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v34
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+
+      - name: Prepare release files and metadata
         run: |
           set -euo pipefail
+
           cp updated-lock/flake.lock flake.lock
+          rm -f dist/manifest-x64.json dist/manifest-aa64.json
           {
             printf '%s\n' '{'
             printf '  "systemdVersion": "%s",\n' '${{ needs.check-release.outputs.version }}'
+            printf '  "releaseTag": "%s",\n' '${{ needs.check-release.outputs.tag }}'
             printf '%s\n' '  "assets": {'
             printf '%s\n' '    "x64": "systemd-bootx64.efi",'
             printf '%s\n' '    "aa64": "systemd-bootaa64.efi"'
             printf '%s\n' '  }'
             printf '%s\n' '}'
           } > dist/manifest.json
-          (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
 
-      - name: Commit updated lockfile
+          (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
+          tar -C dist -czf dist/systemd-boot-bundle.tar.gz \
+            systemd-bootx64.efi \
+            systemd-bootaa64.efi \
+            manifest.json \
+            SHA256SUMS
+
+          x64_hash=$(nix hash file dist/systemd-bootx64.efi)
+          aa64_hash=$(nix hash file dist/systemd-bootaa64.efi)
+          manifest_hash=$(nix hash file dist/manifest.json)
+          checksums_hash=$(nix hash file dist/SHA256SUMS)
+          bundle_hash=$(nix hash file dist/systemd-boot-bundle.tar.gz)
+
+          cat > release.nix <<EOF
+          let
+            systemdVersion = "${{ needs.check-release.outputs.version }}";
+            releaseTag = "${{ needs.check-release.outputs.tag }}";
+            baseUrl = "https://github.com/${{ github.repository }}/releases/download/\${releaseTag}";
+          in {
+            inherit systemdVersion releaseTag;
+            bootstrap = false;
+
+            assets = {
+              bundle = {
+                file = "systemd-boot-bundle.tar.gz";
+                url = "\${baseUrl}/systemd-boot-bundle.tar.gz";
+                hash = "${bundle_hash}";
+              };
+
+              x64 = {
+                file = "systemd-bootx64.efi";
+                url = "\${baseUrl}/systemd-bootx64.efi";
+                hash = "${x64_hash}";
+              };
+
+              aa64 = {
+                file = "systemd-bootaa64.efi";
+                url = "\${baseUrl}/systemd-bootaa64.efi";
+                hash = "${aa64_hash}";
+              };
+
+              manifest = {
+                file = "manifest.json";
+                url = "\${baseUrl}/manifest.json";
+                hash = "${manifest_hash}";
+              };
+
+              checksums = {
+                file = "SHA256SUMS";
+                url = "\${baseUrl}/SHA256SUMS";
+                hash = "${checksums_hash}";
+              };
+            };
+          }
+          EOF
+
+      - name: Commit release metadata
         run: |
           set -euo pipefail
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-          if git diff --quiet -- flake.lock; then
-            echo "flake.lock unchanged."
+          if git diff --quiet -- flake.lock release.nix; then
+            echo "release metadata unchanged."
           else
-            git add flake.lock
-            git commit -m "chore: update nixpkgs for ${{ needs.check-release.outputs.tag }}"
+            git add flake.lock release.nix
+            git commit -m "chore: update release metadata for ${{ needs.check-release.outputs.tag }}"
             git push
           fi
 
@@ -195,5 +261,6 @@ jobs:
             dist/systemd-bootaa64.efi \
             dist/manifest.json \
             dist/SHA256SUMS \
+            dist/systemd-boot-bundle.tar.gz \
             --title "systemd-boot ${{ needs.check-release.outputs.version }}" \
             --notes "Pinned systemd-boot EFI binaries built from nixpkgs systemd ${{ needs.check-release.outputs.version }}."
