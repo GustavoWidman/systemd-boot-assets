@@ -21,17 +21,20 @@ SHA256SUMS
 
 ## Build locally
 
+Build the native asset for a Linux system:
+
 ```sh
 nix build .#packages.x86_64-linux.default
 ```
 
-The output contains both EFI binaries:
+The `x86_64-linux` output contains:
 
 ```text
 result/systemd-bootx64.efi
-result/systemd-bootaa64.efi
 result/manifest.json
 ```
+
+Build `.#packages.aarch64-linux.default` on an aarch64 Linux runner for `systemd-bootaa64.efi`.
 
 ## Use from another flake
 
