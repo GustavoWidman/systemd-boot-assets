@@ -1,0 +1,112 @@
+name: Build systemd-boot assets
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: systemd-boot-assets
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build and release EFI assets
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check if builds are disabled
+        id: disabled
+        run: |
+          if [ -f .disable-builds ]; then
+            echo "Builds disabled: $(cat .disable-builds)"
+            echo "disabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "disabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Nix
+        if: steps.disabled.outputs.disabled != 'true'
+        uses: nixbuild/nix-quick-install-action@v34
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+            cores = 0
+            max-jobs = auto
+
+      - name: Update nixpkgs input
+        if: steps.disabled.outputs.disabled != 'true'
+        run: nix flake update nixpkgs
+
+      - name: Check release state
+        if: steps.disabled.outputs.disabled != 'true'
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version=$(./scripts/systemd-version.sh)
+          tag="systemd-v${version}"
+
+          echo "systemd version: ${version}"
+          echo "release tag: ${tag}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release already exists."
+            echo "has_new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release is missing."
+            echo "has_new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build assets
+        if: steps.check.outputs.has_new_release == 'true'
+        run: nix build .#packages.x86_64-linux.default -L
+
+      - name: Prepare release files
+        if: steps.check.outputs.has_new_release == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp result/systemd-bootx64.efi dist/systemd-bootx64.efi
+          cp result/systemd-bootaa64.efi dist/systemd-bootaa64.efi
+          cp result/manifest.json dist/manifest.json
+          (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
+
+      - name: Commit updated lockfile
+        if: steps.check.outputs.has_new_release == 'true'
+        run: |
+          set -euo pipefail
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          if git diff --quiet -- flake.lock; then
+            echo "flake.lock unchanged."
+          else
+            git add flake.lock
+            git commit -m "chore: update nixpkgs for ${{ steps.check.outputs.tag }}"
+            git push
+          fi
+
+      - name: Create GitHub release
+        if: steps.check.outputs.has_new_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.check.outputs.tag }}" \
+            dist/systemd-bootx64.efi \
+            dist/systemd-bootaa64.efi \
+            dist/manifest.json \
+            dist/SHA256SUMS \
+            --title "systemd-boot ${{ steps.check.outputs.version }}" \
+            --notes "Pinned systemd-boot EFI binaries built from nixpkgs systemd ${{ steps.check.outputs.version }}."
