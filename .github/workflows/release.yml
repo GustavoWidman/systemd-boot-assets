@@ -10,8 +10,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-assets:
-    name: Build EFI assets
+  check-release:
+    name: Check systemd version
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -39,8 +39,6 @@ jobs:
         with:
           nix_conf: |
             experimental-features = nix-command flakes
-            cores = 0
-            max-jobs = auto
 
       - name: Update nixpkgs input
         if: steps.disabled.outputs.disabled != 'true'
@@ -70,27 +68,6 @@ jobs:
             echo "has_new_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build assets
-        if: steps.check.outputs.has_new_release == 'true'
-        run: nix build .#packages.x86_64-linux.default -L
-
-      - name: Prepare release files
-        if: steps.check.outputs.has_new_release == 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cp result/systemd-bootx64.efi dist/systemd-bootx64.efi
-          cp result/systemd-bootaa64.efi dist/systemd-bootaa64.efi
-          cp result/manifest.json dist/manifest.json
-          (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
-
-      - name: Upload release files
-        if: steps.check.outputs.has_new_release == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: systemd-boot-assets
-          path: dist/*
-
       - name: Upload updated lockfile
         if: steps.check.outputs.has_new_release == 'true'
         uses: actions/upload-artifact@v4
@@ -98,10 +75,61 @@ jobs:
           name: flake-lock
           path: flake.lock
 
+  build-assets:
+    name: Build ${{ matrix.asset }}
+    needs: check-release
+    if: needs.check-release.outputs.has_new_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            asset: systemd-bootx64.efi
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            asset: systemd-bootaa64.efi
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Download updated lockfile
+        uses: actions/download-artifact@v4
+        with:
+          name: flake-lock
+          path: .
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v34
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+            cores = ${{ matrix.system == 'aarch64-linux' && '2' || '0' }}
+            max-jobs = ${{ matrix.system == 'aarch64-linux' && '2' || 'auto' }}
+
+      - name: Build asset
+        run: nix build .#packages.${{ matrix.system }}.default -L
+
+      - name: Prepare asset
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "result/${{ matrix.asset }}" "dist/${{ matrix.asset }}"
+          cp result/manifest.json "dist/manifest-${{ matrix.system }}.json"
+
+      - name: Upload asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+
   publish-release:
     name: Publish release
-    needs: build-assets
-    if: needs.build-assets.outputs.has_new_release == 'true'
+    needs: [check-release, build-assets]
+    if: needs.check-release.outputs.has_new_release == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -111,10 +139,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download release files
+      - name: Download x64 asset
         uses: actions/download-artifact@v4
         with:
-          name: systemd-boot-assets
+          name: systemd-bootx64.efi
+          path: dist
+
+      - name: Download aa64 asset
+        uses: actions/download-artifact@v4
+        with:
+          name: systemd-bootaa64.efi
           path: dist
 
       - name: Download updated lockfile
@@ -123,10 +157,24 @@ jobs:
           name: flake-lock
           path: updated-lock
 
-      - name: Commit updated lockfile
+      - name: Prepare release files
         run: |
           set -euo pipefail
           cp updated-lock/flake.lock flake.lock
+          cat > dist/manifest.json <<EOF
+          {
+            "systemdVersion": "${{ needs.check-release.outputs.version }}",
+            "assets": {
+              "x64": "systemd-bootx64.efi",
+              "aa64": "systemd-bootaa64.efi"
+            }
+          }
+EOF
+          (cd dist && sha256sum systemd-bootx64.efi systemd-bootaa64.efi manifest.json > SHA256SUMS)
+
+      - name: Commit updated lockfile
+        run: |
+          set -euo pipefail
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
@@ -134,7 +182,7 @@ jobs:
             echo "flake.lock unchanged."
           else
             git add flake.lock
-            git commit -m "chore: update nixpkgs for ${{ needs.build-assets.outputs.tag }}"
+            git commit -m "chore: update nixpkgs for ${{ needs.check-release.outputs.tag }}"
             git push
           fi
 
@@ -142,10 +190,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ needs.build-assets.outputs.tag }}" \
+          gh release create "${{ needs.check-release.outputs.tag }}" \
             dist/systemd-bootx64.efi \
             dist/systemd-bootaa64.efi \
             dist/manifest.json \
             dist/SHA256SUMS \
-            --title "systemd-boot ${{ needs.build-assets.outputs.version }}" \
-            --notes "Pinned systemd-boot EFI binaries built from nixpkgs systemd ${{ needs.build-assets.outputs.version }}."
+            --title "systemd-boot ${{ needs.check-release.outputs.version }}" \
+            --notes "Pinned systemd-boot EFI binaries built from nixpkgs systemd ${{ needs.check-release.outputs.version }}."
