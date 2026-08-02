@@ -1,6 +1,6 @@
 let
-  systemdVersion = "261";
-  releaseTag = "systemd-v261";
+  systemdVersion = "261.1";
+  releaseTag = "systemd-v261.1";
   baseUrl = "https://github.com/GustavoWidman/systemd-boot-assets/releases/download/${releaseTag}";
 in {
   inherit systemdVersion releaseTag;
@@ -10,31 +10,31 @@ in {
     bundle = {
       file = "systemd-boot-bundle.tar.gz";
       url = "${baseUrl}/systemd-boot-bundle.tar.gz";
-      hash = "sha256-TbKB8tXdR/6Q0dvxk0+uKoSoEpnMM48u7s62w9+nKek=";
+      hash = "sha256-+RG0Iuh1yoDIwDZhafeC2ZPI8WaHg94mnDVdTGSEgTo=";
     };
 
     x64 = {
       file = "systemd-bootx64.efi";
       url = "${baseUrl}/systemd-bootx64.efi";
-      hash = "sha256-Ji5u6KCRQxLMWZXU2Vpvy214d7gHo553fNpofVm33p0=";
+      hash = "sha256-cbJ7KIVN7kZjaFpGsfbAd2HDc5kFgVZLDtK2EwWR4qI=";
     };
 
     aa64 = {
       file = "systemd-bootaa64.efi";
       url = "${baseUrl}/systemd-bootaa64.efi";
-      hash = "sha256-ak9sC1R1iNZ6bm3Ywkr3/pqSQnyxr5HH09EA9wI4kcg=";
+      hash = "sha256-abIeO8YXjsaJ1uJIQak71wetNgxIp8EkF4YTk3t0sdU=";
     };
 
     manifest = {
       file = "manifest.json";
       url = "${baseUrl}/manifest.json";
-      hash = "sha256-6JOHxDWQ54JHYtrqWt2GFQ20blv+pCSpguw5eti/F0g=";
+      hash = "sha256-tkG0fLAo8xTb76RQPp9qFCseJGhT8JTA5T0vgT5mrfw=";
     };
 
     checksums = {
       file = "SHA256SUMS";
       url = "${baseUrl}/SHA256SUMS";
-      hash = "sha256-ds2kTNR53Ijq0cylxUI/PGez1j6uzkHDNf6FU1wrzQk=";
+      hash = "sha256-j+yPnMfjC7xTyNpJyptpublBK9+8WTGz3W4RO1GiIUY=";
     };
   };
 }
